@@ -1,5 +1,3 @@
-PowerTriage
-
 # Overview
 PowerTriage is a tool for SOCs and CERTs mainly used for Indicent Detection and Incodent Response.
 PowerTriage can be used to back up and display lots of live data from systems. The intormation gathering process is designed to be as secure as possible to not expose any danger to the corporate network by logging onto a potentially infected machine.
