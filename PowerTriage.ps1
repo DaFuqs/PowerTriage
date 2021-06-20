@@ -505,9 +505,14 @@ Begin {
                                     Company, Description,
                                     StartTime,
                                     @{Name="RAM_MB"; Expression={
-                                        [Math]::Round($_.WorkingSet_MB / 1MB)
-                                    }} |
-            Sort-Object -Property ID
+                                       [Math]::Round($_.WorkingSet_MB / 1MB)
+                                    }},
+                                    @{Name="EnvironmentalVariables"; Expression={
+                                       ($_.StartInfo.EnvironmentVariables.GetEnumerator() | ForEach-Object { "$($_.Name): $($_.Value)" }) -join "; "
+                                    }},
+                                    @{Name="LoadedModules"; Expression={
+                                       $_.Modules.FileName -join "; "
+                                    }}
     }
 
     ####################################
@@ -655,44 +660,33 @@ Begin {
             [string] $Autorunsc64ExePath
         )
 
-        Begin {
-            Write-Debug "Starting $($MyInvocation.Mycommand)."
+        # Dynamic Path to autorunsc64.exe based on if the param is set or not
+        if (-not $Autorunsc64ExePath) {
+            $Autorunsc64ExePath = "$PSScriptRoot\autorunsc64.exe"
         }
 
-        Process {
-
-            # Dynamic Path to autorunsc64.exe based on if the param is set or not
-            if (-not $Autorunsc64ExePath) {
-                $Autorunsc64ExePath = "$PSScriptRoot\autorunsc64.exe"
-            }
-
-            # Test for the existence of the autorunsc64.exe
-            # Abort if it does not exist
-            if(-not (Test-Path -Path $Autorunsc64ExePath -PathType Leaf)) {
-                Write-Error "Path to autorunsc64.exe is not valid."
-                return
-            }
-
-            # Execute the tool with the parameters for analysing all types of
-            # autostart types (-a *) and output the resulting data in csv format (-c)
-            # depending if the autostart stems from a file the files hash will be 
-            # calculated, too (-h)
-            Write-Verbose "Querying autostarts..."
-            $autostartsraw = &$Autorunsc64ExePath -a * -c -h -accepteula
-
-            # Cut autostarts tool header and create native
-            # PowerShell objects from the returned string
-            $autostarts = $autostartsRaw[5..$autostartsRaw.Count] | 
-                ConvertFrom-Csv -Delimiter "," | 
-                Where-Object -Property Entry -NE -Value ""
-            Write-Verbose "Got $($autostarts.Count) autostart entries."
-
-            Write-Output $autostarts
+        # Test for the existence of the autorunsc64.exe
+        # Abort if it does not exist
+        if(-not (Test-Path -Path $Autorunsc64ExePath -PathType Leaf)) {
+            Write-Error "Path to autorunsc64.exe is not valid."
+            return
         }
 
-        End {
-            Write-Debug "Finished $($MyInvocation.Mycommand)."
-        }
+        # Execute the tool with the parameters for analysing all types of
+        # autostart types (-a *) and output the resulting data in csv format (-c)
+        # depending if the autostart stems from a file the files hash will be 
+        # calculated, too (-h)
+        Write-Verbose "Querying autostarts..."
+        $autostartsraw = &$Autorunsc64ExePath -a * -c -h -accepteula
+
+        # Cut autostarts tool header and create native
+        # PowerShell objects from the returned string
+        $autostarts = $autostartsRaw[5..$autostartsRaw.Count] | 
+            ConvertFrom-Csv -Delimiter "," | 
+            Where-Object -Property Entry -NE -Value ""
+        Write-Verbose "Got $($autostarts.Count) autostart entries."
+
+        Write-Output $autostarts
     }
    
     ####################################
@@ -1188,8 +1182,7 @@ Process {
     Log-Progress "Testing for remote WSman encryption" -PercentComplete 4
     $remoteWSmanEncryption = Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Test-WSManEncryptionEnabled} -ArgumentList "Client"
     if($remoteWSmanEncryption -ne $true) {
-        Log-Error "The remote WSMan is not configured to use encryption. It's not save to establish a remote connection to a potentially infected machine."
-        return
+        Log-Warning "The remote WSMan is not configured to use encryption. You are establishing a remote connection to a potentially infected machine."
     } else {
         Log-Information "Remote WSMan not configured to use encryption"
     }
@@ -1305,7 +1298,7 @@ Process {
     # PROCESSES
     if($Options -contains "Processes") {
         Log-Progress "Retrieving process information" -PercentComplete 20
-        $remoteProcessInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-ProcessInformation} | Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
+        $remoteProcessInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-ProcessInformation} | Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId) | Sort-Object -Property Name
         Log-Information "Finished restrieving process information ($($remoteProcessInfo.Count) entries). Saving and displaying..."
         $remoteProcessInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "processes.csv") -NoTypeInformation -Delimiter ";"
         $remoteProcessInfo | Out-GridView -Title "Running Processes"
