@@ -320,7 +320,7 @@ Begin {
         # Pattern representing a process entry
         # Example: "svchost.exe pid: 16968 DST\UserName"
         [regex] $ProcessPattern = "(?<Name>\w+[.\w]+?)\s+pid:\s+(?<PID>\d+)\s+(?<User>[\\\w\s<>]+)$"
-        # Pattern representing an handle entry
+        # Pattern representing a handle entry
         # belonging to the last parsed process entry
         # Example1: "  134: File          C:\Windows\System32\Conhost.exe.mui"
         # Example2: "  1E4: Section       \Sessions\2\windows_shell_counters"
@@ -471,7 +471,7 @@ Begin {
 
         # Calculate SHA-1 hashes for all items in the directory
         # and save the result in a csv file
-        # Because Excel uses the Semicolon as default delemiter in german
+        # Because Excel uses the Semicolon as default delimiter in german
         # language we use the Semicolon also so no manual splits are 
         # necessary when viewing the csv later
         $hashes = Get-ChildItem -Path $Path -Recurse | Get-FileHash -Algorithm SHA1
@@ -813,7 +813,9 @@ Begin {
         )
 
         Get-WinEvent -Path $Path -FilterXPath "*[System[EventID=4720 or EventID=4722 or EventID=4723 or EventID=4724 or EventID=4725 or EventID=4726 or EventID=4738 or EventID=4740 or EventID=4765 or EventID=4766 or EventID=4767 or EventID=4780 or EventID=4781]]" | Foreach-Object {
-            [PSCustomObject] @{
+			# Replace CR/LF with just CR in message. Workaround for a bug / feature
+			# in Out-Gridview where the lines would be truncated instead
+			[PSCustomObject] @{
                 Time = $_.TimeCreated
 	            EventID = $_.ID
 	            ProcessID = $_.ProcessID
