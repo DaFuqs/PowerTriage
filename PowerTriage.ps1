@@ -765,30 +765,28 @@ Begin {
             [Hashtable] $Mapping
         )
 
-        # Helper function to resolve user SIDs to names
-        Function Get-AccountNameFromSID($SID) {
-            # if it's a remote system that is getting queried
-            # try to resolve accounts via their remote sid mapping first
-            if($Mapping) {
-                if($Mapping.ContainsKey($SID)) {
-                    return $Mapping[$SID]
-                } else {
-                    # most likely a domain / system account
-                    # => resolve via local query
-                }
+        # if it's a remote system that is getting queried
+        # try to resolve accounts via their remote sid mapping first
+        if($Mapping) {
+            if($Mapping.ContainsKey($SID)) {
+                return $Mapping[$SID]
+            } else {
+                # most likely a domain / system account
+                # => resolve via local query
             }
-            # local SID query. able to resolve 
-            # default accounts (identical SIDs) and domain accounts
-            try {
-                $objSID = [System.Security.Principal.SecurityIdentifier]::new($SID)
-                $name = $objSID.Translate([System.Security.Principal.NTAccount]).Value
-            } catch {
-                # if the sid cannot be resolved return the plain sid again
-                # (in case it's a local accounts that was already deleted) 
-                $name = $SID
-            }
-            return $name
         }
+        # local SID query. able to resolve 
+        # default accounts (identical SIDs) and domain accounts
+        try {
+            $objSID = [System.Security.Principal.SecurityIdentifier]::new($SID)
+            $name = $objSID.Translate([System.Security.Principal.NTAccount]).Value
+        } catch {
+            # if the sid cannot be resolved return the plain sid again
+            # (in case it's a local accounts that was already deleted) 
+            $name = $SID
+        }
+        return $name
+
     }
 
     <#
@@ -1120,9 +1118,11 @@ Process {
 
     # Test local WSMan encryption settings
     Log-Progress "Testing if local WSMan encryption is enabled..." -PercentComplete 0
-    $localWSmanEntryption = Test-WSManEncryptionEnabled -Side Server
-    if($localWSmanEntryption -ne $true) {
-        Log-Error "The local WSMan is not configured to use encyption. It's not save to establish a remote connection to a potentially infected machine. Enable encryption or use a different machine."
+    $localWSmanEncryption = Test-WSManEncryptionEnabled -Side Server
+    if($localWSmanEncryption -match "No permission") {
+        Log-Warning "No permission to query local WSMan encryption setting. Is the script running as admin?"
+    }elseif($localWSmanEncryption -ne $true) {
+        Log-Error "The local WSMan is not configured to use encryption. It's not save to establish a remote connection to a potentially infected machine. Enable encryption or use a different machine."
         return
     } else {
         Log-Information "Local WSMan is correctly configured to use encryption"
@@ -1145,14 +1145,16 @@ Process {
                 # the user is able to input a different credential for authentication
                 Log-Warning "Could not automatically get the LAPS password from AD. Missing permissions or does the computer not have LAPS installed?"
             }
-        }
+        } 
 
         if($LAPSPassword) {
+            Log-Information "LAPS password is available. Trying login with LAPS account..."
             $RemoteCredential = [PSCredential]::new("$ComputerName\$LAPSUserName", $LAPSPassword)
             $RemoteSession = New-PSSession -ComputerName $ComputerName -Credential $RemoteCredential -Authentication Negotiate -ErrorVariable remoteconnectionerror -ErrorAction SilentlyContinue
         }
     } else {
         # If LAPSUser is not set: Attempt to authenticate with the currently active account
+        Log-Information "No LAPS account available. Logging on with current credentials..."
         $RemoteSession = New-PSSession -ComputerName $ComputerName -ErrorVariable remoteconnectionerror -ErrorAction SilentlyContinue
     }
 
@@ -1173,7 +1175,7 @@ Process {
         } else {
             # If $RemoteCredential is empty (the user cancelled the credential input dialog)
             # exit the script entirely
-            Log-Information "User cancelled credential input dialog box. Exiting PowerTriage"
+            Log-Information "The user cancelled the credential input dialog box. Exiting PowerTriage."
             return
         }
     }
@@ -1186,7 +1188,7 @@ Process {
     if($remoteWSmanEncryption -ne $true) {
         Log-Warning "The remote WSMan is not configured to use encryption. You are establishing a remote connection to a potentially infected machine."
     } else {
-        Log-Information "Remote WSMan not configured to use encryption"
+        Log-Information "Remote WSMan not configured to use encryption."
     }
 
     # Test for time drift bewtween the systems
@@ -1536,7 +1538,7 @@ End {
     # a remote session open it has to be closed to not end up with
     # a lingering session on the target computer
     if($RemoteSession -and $RemoteSession.State -eq "") {
-        Log-Warning "Script is being stopped, but a remote session is still active (Cancelled via Ctrl+C?). Remote session will be closed"
+        Log-Warning "Script is being finished, but a remote session is still active. Remote session will be closed"
         Remove-PSSession -Session $RemoteSession
     }
 
