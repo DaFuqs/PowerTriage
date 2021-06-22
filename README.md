@@ -1,6 +1,6 @@
 # Overview
 PowerTriage is a tool for SOCs and CERTs mainly used for Indicent Detection and Incodent Response.
-PowerTriage can be used to back up and display lots of live data from systems. The intormation gathering process is designed to be as secure as possible to not expose any danger to the corporate network by logging onto a potentially infected machine.
+PowerTriage can be used to back up and display lots of live data from systems. The information gathering process is designed to be as secure as possible to not expose any danger to the corporate network by logging onto a potentially infected machine.
 
 Domain joined or not, authentication can be done via Local Accounts (automatic password retrieval from AD if using LAPS), or your usual domain analyst accounts.
 
@@ -14,11 +14,11 @@ PowerTriage supports capturing the following data. Each collector can be turned 
 - Networking: Captures active TCP connections, UDP data, routing information and ARP cache
 - FileHandles: Captures all open file handles using Sysinternals handle.exe (download separately)
 - RamDump: Creates a memory image using Belkasoft RAM Capturer
-- ComputerInfo: Captures general system information, like computer name, windows edition, ...
+- ComputerInfo: Captures general system information, like computer name, windows edition,...
 - Processes: Captures all active processes
-- Bitlocker: Captures bitlocker keys for all active volumes. (will not get displayed, just backed up)
+- Bitlocker: Captures bitlocker keys for all active volumes. (Will not get displayed, just backed up)
 - LocalUsers: Captures all local users
-- Environmental Variables: Calputes environmental variables of the system and all active users
+- Environmental Variables: Captures Environmental variables of the system and all active users
 - EventLogs: Creates backups of all event log files
 
 ## Additional checks and reports
@@ -45,7 +45,7 @@ Put the Sysinternals tools and Ram Capturer directory in the subfolder "HelpFile
 The Computer to target
 
 ### -LAPSUserName
-The name of a local / LAPS account. If not set remote authentication will be attempted with the current user credentials. Since that is not a local account password hashes will be transmitted to the destination computer - it's therefore less safe than using a local / LAPS account though
+The name of a local / LAPS account. If not set, remote authentication will be attempted with the current user credentials. Since that is not a local account password, hashes will be transmitted to the destination computer - it therefore is less safe than using a local / LAPS account
 
 ### -LAPSPassword
 The password for the local / LAPS account. If -LAPSUserName is set but password is not the script will automatically try to query the password of the user from Active Directory instead
