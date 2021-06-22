@@ -753,16 +753,16 @@ Begin {
     .DESCRIPTION
         Can process one or a list of previously backed up logs or run against live logs
     #>
-    Function Resolve-UserNameFromSID {
+    Function Get-AccountNameOfSID {
 
             Param (
             # The SID to be resolved
             [Parameter(Mandatory=$false, ValueFromPipeline=$true)]
-            [SID] $SID,
+            [string] $SID,
 
             # A hashtable consisting of keys of SIDs and account names as values
             [Parameter(Mandatory=$false)]
-            [Hashtable] $Mapping
+            [Hashtable] $Mapping = $script:SidToUserNameMapping
         )
 
         # if it's a remote system that is getting queried
@@ -914,7 +914,7 @@ Begin {
             # List of files to be analyzed
             # By default runs against the live Security log
             [Parameter(Mandatory=$false, ValueFromPipeline=$true)]
-            [System.IO.FileInfo[]] $Path = "C:\Windows\System32\winevt\Logs\Security.evtx"
+            [System.IO.FileInfo[]] $Path = "$env:WINDIR\System32\winevt\Logs\Security.evtx"
         )
 
         # Security logon type is an enum documented at:
@@ -995,32 +995,8 @@ Begin {
             if($PSCmdlet.ParameterSetName -eq "Live" -and $ComputerName -ne "localhost" -and $UserSIDsAndNames.Count -eq 0) {
                 $remoteSIDData = Invoke-Command -ComputerName $ComputerName -ScriptBlock { Get-LocalUser | Select-Object -Property Name, SID }
                 $remoteSIDData | ForEach-Object { $UserSIDsAndNames[$_.SID] = $_.Name }
-            }
-
-            Function Get-AccountNameFromSID($SID) {
-                # if it's a remote system that is getting queried
-                # try to resolve accounts via their remote sid mapping first
-                if($UserSidsAndNames) {
-                    if($UserSidsAndNames.ContainsKey($SID)) {
-                        return $UserSIDsAndNames[$SID]
-                    } else {
-                        # most likely a domain / system account
-                        # => resolve via local query
-                    }
-                }
-
-                # local SID query.
-                # able to resolve default accounts (identical SIDs) and domain accounts
-                try {
-                    $objSID = New-Object -TypeName System.Security.Principal.SecurityIdentifier -ArgumentList $SID
-                    $name = $objSID.Translate([System.Security.Principal.NTAccount]).Value
-                } catch {
-                    # if the sid cannot be resolved return the plain sid again
-                    # (in case it's a local accounts that was already deleted) 
-                    $name = $SID
-                }
-            
-                return $name
+            } else {
+                $remoteSIDData = $script:SidToUserNameMapping
             }
         }
 
@@ -1059,7 +1035,7 @@ Begin {
 
                 [PSCustomObject] @{
 	                TimeCreated = $_.Group[0].TimeCreated
-                    UserName = Get-AccountNameFromSID -SID $_.Group[0].UserSid
+                    UserName = Get-AccountNameOfSID -SID $_.Group[0].UserSid -Mapping $remoteSIDData
                     FilePath = $resultPath
                     Script = ($_.Group.ScriptBlockText -join "").replace("`r`n" , "`r" ) # converting from cr-lf to just lf so out-gridview shows the whole script insted of truncating it after a certain length
                 }
@@ -1343,6 +1319,11 @@ Process {
         Log-Information "Finished restrieving user account information ($($remoteUserInfo.Count) entries). Saving and displaying..."
         $remoteUserInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "user_accounts.csv") -NoTypeInformation -Delimiter ";"
         $remoteUserInfo | Out-GridView -Title "Local Users"
+
+        if($Options -contains "EventlogReports") {
+            $script:SidToUserNameMapping = @{}
+            $remoteUserInfo | ForEach-Object { $script:SidToUserNameMapping.Add($_.SID.Value, $_.Name) }
+        }
     } else {
         Log-Warning "Option to capture local user information is not set. Will be skipped."
     }
@@ -1420,22 +1401,30 @@ Process {
             $SecurityEventLog = $EventLogs | Where-Object { $_.Name -eq "Security.evtx" }
             $PowerShellOperationalEventLog = $EventLogs | Where-Object { $_.Name -eq "Microsoft-Windows-PowerShell%4Operational.evtx" }
 
+            if($SecurityEventLog) {
+                Log-Information "Generating user logon report..."
+                $userLogonReport = @(Get-UserLogons -Path $SecurityEventLog)
+                $userLogonReport | Out-GridView -Title "All User Logons"
 
-            Log-Information "Generating user logon report..."
-            $userLogonReport = @(Get-UserLogons -Path $SecurityEventLog)
-            $userLogonReport | Out-GridView -Title "All User Logons"
+                Log-Information "Generating interactive logon report..."
+	            $interactiveUserLogonReport = @(Get-InteractiveUserLogons -Path $SecurityEventLog)
+                $interactiveUserLogonReport | Out-GridView -Title "Interactive User Logons"
 
-            Log-Information "Generating interactive logon report..."
-	        $interactiveUserLogonReport = @(Get-InteractiveUserLogons -Path $SecurityEventLog)
-            $interactiveUserLogonReport | Out-GridView -Title "Interactive User Logons"
-
-            Log-Information "Generating user management events report..."
-	        $eventlogUserManagementEventsReport = @(Get-EventlogUserEvents -Path $SecurityEventLog)  
-            $eventlogUserManagementEventsReport | Out-GridView -Title "User Management Events (creation, deletion, ...)"
+                Log-Information "Generating user management events report..."
+	            $eventlogUserManagementEventsReport = @(Get-EventlogUserEvents -Path $SecurityEventLog)  
+                $eventlogUserManagementEventsReport | Out-GridView -Title "User Management Events (creation, deletion, ...)"
+            } else {
+                Write-Warning "The Security event log could not be backed up. Some event log reports will not run"
+            }
     
-            Log-Information "Generating executed powershell scripts report..."
-	        $eventlogUserManagementEventsReport = @(Get-ExecutedPowerShellScripts -Files $PowerShellOperationalEventLog)
-            $eventlogUserManagementEventsReport | Out-GridView -Title "Executed PowerShell Scripts"
+            if($PowerShellOperationalEventLog) {
+                Log-Information "Generating executed powershell scripts report..."
+	            $eventlogUserManagementEventsReport = @(Get-ExecutedPowerShellScripts -Files $PowerShellOperationalEventLog)
+                $eventlogUserManagementEventsReport | Out-GridView -Title "Executed PowerShell Scripts"
+            } else {
+                Write-Warning "The Powershell/Operational event log could not be backed up. Some event log reports will not run"
+            }
+
 
             Log-Information "Finished generating event log reports"
         } else {
