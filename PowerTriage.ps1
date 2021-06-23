@@ -405,14 +405,14 @@ Begin {
         $RemoteMemDumpPath = Join-Path -Path $RemoteRamCapturerDirectory -ChildPath "dump.memdump"
 
 
-	    # Copy ram capturer from the local computer to 
- 	    # destination system using the C$ share
+	    # Copy ram capturer from the local computer to destination system
 	    Write-Verbose "Copying RAM capturer executive files to remote system"
 	    Copy-Item -Path $RamCapturerDirectory -Destination $RemoteDirectory -ToSession $PSSession -Force -Recurse
 
 	    # Run capture via RamCapturer64.exe and wait until it is finished
 	    Write-Verbose "Starting capturing process in background..."
 	    Invoke-Command -Session $PSSession -ScriptBlock {
+            # Start the ram capture process
             Start-Process -FilePath $using:RemoteRamCapturerExePath -ArgumentList $using:RemoteMemDumpPath -Wait
 
             # Output the location of the memory dump for copying later
@@ -461,7 +461,7 @@ Begin {
             # When set the original files will be deleted
             # Only the zip will be kept
             [Parameter(Mandatory=$false)]
-            [boolean] $RemoveOriginal =$false
+            [boolean] $RemoveOriginal = $false
         )
 
         $DirectoryPath = Split-Path -Path $Path -Parent
@@ -478,6 +478,12 @@ Begin {
         $hashes | Export-Csv -Path $HashFilePath -NoTypeInformation -Delimiter ";"
 
         Compress-Archive -Path $Path -CompressionLevel Optimal -DestinationPath $ArchiveFilePath
+
+        Write-Warning "Path: $Path"
+        Write-Warning "DirectoryPath: $DirectoryPath"
+        Write-Warning "FolderName: $FolderName"
+        Write-Warning "HashFilePath: $HashFilePath"
+        Write-Warning "ArchiveFilePath: $ArchiveFilePath"
 
         # If the switch is set remove the original folder
         if($RemoveOriginal) {
@@ -648,7 +654,7 @@ Begin {
     .EXAMPLE
         PS> Get-AutorunsRemote -ComputerName MyComputer -Autorunsc64ExePath "C:\Sysinternals\autorunsc64.exe"
 
-        Executes the autorunsc64.exe and parses it's output as PowerShell native objects
+        Executes the autorunsc64.exe and parses its output as PowerShell native objects
     #>
     Function Get-Autoruns {
 
@@ -700,40 +706,63 @@ Begin {
 
     <#
     .SYNOPSIS
-        Copies all event logs from a computer to the target destination
+        Creates backups of all active event logs
     #>
-    Function Get-EventLogBackup {
+    Function Invoke-EventLogBackup {
     
-        Param(
-            # The computer to pull all event log files from
-            [Parameter(Mandatory=$true, ValueFromPipeline=$true)]
-            [string] $ComputerName,
+        [CmdletBinding()]
 
-            # The folder to copy all event logs to
-            [Parameter(Mandatory=$true, ValueFromPipelineByPropertyName=$true)]
-            [string] $Destination
+        Param(
+            # The directory where to backup all event logs to
+            [Parameter(Mandatory=$true)]
+            [string] $Path
         )
 
-        # This whole script block runs directly on the source machine and makes
-        # use of the administrative C$ share to backup the raw event log files 
-        Write-Verbose "Start capturing Eventlogs..."
-
-        # All eventlog files (.evtx) are stored in system32\winevt\logs
-        # There are also a few channels stored in this folder, though they are irrelevant for us
-        # -Force Creates the folder if it does not exist yet, -PassThru outputs the copied files as objects
-        Write-Verbose "Copying all Files that match `"\\$ComputerName\c$\Windows\System32\winevt\Logs\*.evtx`""
-
-        # Use Join path to explicitly request a directory path
-        # In case a folder path is submitted, but it does not end in "\"
-        $DestinationPath = Join-Path -Path "$Destination\" -ChildPath "\"
-        
-        # If the folder does not yet exist create it
-        if(-not (Test-Path -Path $DestinationPath -PathType Container)) {
-            New-Item -Path $DestinationPath -ItemType Directory
+        # If the target directory does not exist:
+        # Create it and any parent directories
+        if(-not (Test-Path -Path $Path -PathType Container)) {
+            New-Item -Path $Path -ItemType Directory -Force | Out-Null
         }
 
-        # Copy all files and output the destination ones into the pipeline
-        Copy-Item -Path "\\$ComputerName\c$\Windows\System32\winevt\Logs\*.evtx" -Destination $DestinationPath -Force -PassThru
+        # Query all existing event logs via wevtutil
+        $eventLogs = wevtutil enum-logs
+        foreach($eventLog in $eventLogs) {
+            # Only back up logs that are enabled
+            $eventLogProperties = Get-LogProperties -Name $eventLog -ErrorAction SilentlyContinue
+            if($eventLogProperties.Enabled -and $eventLogProperties.MaxLogSize -gt 0) {
+
+                # backup each event log to a file with same name
+                # (replace slashes, they are forbidden in file names)
+                $eventLogName = "$($eventLog -replace "/", "_").evtx"
+                $eventLogPath = Join-Path -Path $Path -ChildPath $eventLogName
+                $returned = wevtutil export-log "$eventLog" "$eventLogPath" 2>$null
+
+                switch ($LASTEXITCODE) {
+                    0 {
+                        Write-Information "Log backed up: $eventLog"
+                        break
+                    }
+                    5 {
+                        Write-Warning "Log Access denied: $eventLog"
+                        break
+                    }
+                    80 {
+                        Write-Warning "Log File already exists: $eventLog" 
+                        break          
+                    }
+                    15022 {
+                        Write-Information "Log access not allowed while channel is opened: $eventLog"
+                        break
+                    }
+                    Default {
+                        Write-Warning "Unhandled error backing up log via wevtutil.exe. Return Code: $LASTEXITCODE´: $eventLog"
+                        break
+                    }
+                }        
+            } else {
+                Write-Information "Log disabled: $eventLog"
+            }
+        }
 
         Write-Verbose "Finished capturing Eventlogs."
     }
@@ -750,8 +779,6 @@ Begin {
     <#
     .SYNOPSIS  
         Function to resolve a sid based on a hashtable mapping
-    .DESCRIPTION
-        Can process one or a list of previously backed up logs or run against live logs
     #>
     Function Get-AccountNameOfSID {
 
@@ -786,7 +813,6 @@ Begin {
             $name = $SID
         }
         return $name
-
     }
 
     <#
@@ -807,7 +833,7 @@ Begin {
             # List of files to be analyzed
             # By default runs against the live Security log
             [Parameter(Mandatory=$false, ValueFromPipeline=$true)]
-            [System.IO.FileInfo[]] $Path = "$env:WINDIR\System32\winevt\Logs\Security.evtx"
+            [string[]] $Path = "$env:WINDIR\System32\winevt\Logs\Security.evtx"
         )
 
         Get-WinEvent -Path $Path -FilterXPath "*[System[EventID=4720 or EventID=4722 or EventID=4723 or EventID=4724 or EventID=4725 or EventID=4726 or EventID=4738 or EventID=4740 or EventID=4765 or EventID=4766 or EventID=4767 or EventID=4780 or EventID=4781]]" | Foreach-Object {
@@ -840,7 +866,7 @@ Begin {
             # List of files to be analyzed
             # By default runs against the live Security log
             [Parameter(Mandatory=$false, ValueFromPipeline=$true)]
-            [System.IO.FileInfo[]] $Path = "$env:WINDIR\System32\winevt\Logs\Security.evtx"
+            [string[]] $Path = "$env:WINDIR\System32\winevt\Logs\Security.evtx"
         )
 
         # Gather data from eventlog
@@ -851,7 +877,7 @@ Begin {
             $event = $_
             switch ($event.ID) {
                 # Event ID 4624: "An account was successfully logged on"
-                # Property 8 describes the logon tye (domain logon, local logon,  iden-tity change...)
+                # Property 8 describes the logon type (domain logon, local logon,  iden-tity change...)
                 # Property 26 describes if the user logged on with an elevated token ("run as admin") or as a normal user
                 4624 { 
                     if($event.Properties[8].Value -in @(2, 7, 10, 11)) {
@@ -914,7 +940,7 @@ Begin {
             # List of files to be analyzed
             # By default runs against the live Security log
             [Parameter(Mandatory=$false, ValueFromPipeline=$true)]
-            [System.IO.FileInfo[]] $Path = "$env:WINDIR\System32\winevt\Logs\Security.evtx"
+            [string[]] $Path = "$env:WINDIR\System32\winevt\Logs\Security.evtx"
         )
 
         # Security logon type is an enum documented at:
@@ -977,7 +1003,7 @@ Begin {
         
             # A list of files to be analyzed
             [Parameter(ParameterSetName='FromFile', Mandatory=$true, ValueFromPipelineByPropertyName=$true)]
-            [System.IO.FileInfo[]] $Files,
+            [string[]] $Files,
 
             # A hashtable consisting of SIDs as key and user names as their values
             # If a computer is queried live the list can be automatically be created
@@ -1081,8 +1107,10 @@ Begin {
     # Start logging all script output and log script parameters
     # The transcript file has to reside in the top folder so it does not
     # block the hashing and zipping of backed up data (since it's still being written to)
-    $TranscriptfilePath = Split-Path -Path $ResultsFolder -Parent
-    Start-Transcript -OutputDirectory $TranscriptfilePath -IncludeInvocationHeader
+    $TranscriptDirectory = Split-Path -Path $ResultsFolder -Parent
+    $TranscriptFileName = "PowerTriage_$(Get-Date -Format "yyyyMMdd_HHmm")_$ComputerName.log"
+    $TranscriptFilePath = Join-Path -Path $TranscriptDirectory -ChildPath $TranscriptFileName
+    Start-Transcript -Path $TranscriptFilePath -IncludeInvocationHeader
     Log-Information "Starting PowerTriage"
     Log-Information "Target Computer: $ComputerName"
     Log-Information "Results Folder: $ResultsFolder"
@@ -1101,7 +1129,7 @@ Process {
         Log-Error "The local WSMan is not configured to use encryption. It's not save to establish a remote connection to a potentially infected machine. Enable encryption or use a different machine."
         return
     } else {
-        Log-Information "Local WSMan is correctly configured to use encryption"
+        Log-Information "The local WSMan is correctly configured to use encryption"
     }
 
 
@@ -1200,7 +1228,7 @@ Process {
         Log-Progress "Retrieving computer information" -PercentComplete 8
         $remoteComputerInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock { Get-ComputerInfo } | Select-Object -Property * -ExcludeProperty PSComputerName, RunspaceId)
 
-        Log-Information "Finished restrieving computer information ($($remoteComputerInfo.Count) entries). Saving and displaying..."
+        Log-Information "Finished retrieving computer information ($($remoteComputerInfo.Count) entries). Saving and displaying..."
         $remoteComputerInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "computerinfo.csv") -NoTypeInformation -Delimiter ";"
         $remoteComputerInfo | Select-Object -Property CsNAme,
                                                       CsDomain,
@@ -1221,26 +1249,30 @@ Process {
     if($Options -contains "Networking") {
         Log-Progress "Retrieving network information" -PercentComplete 10
         Log-Information "Network Step 1: TCP information"
-        $remoteTCPInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-TCPInformation} | Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
-        Log-Information "Finished restrieving TCP information ($($remoteTCPInfo.Count) entries). Saving and displaying..."
+        $remoteTCPInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-TCPInformation} | 
+                                    Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
+        Log-Information "Finished retrieving TCP information ($($remoteTCPInfo.Count) entries). Saving and displaying..."
         $remoteTCPInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "tcpconnections.csv") -NoTypeInformation -Delimiter ";"
         $remoteTCPInfo | Out-GridView -Title "TCP Connections"
 
         Log-Information "Network Step 2: UDP information"
-        $remoteUDPInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-UDPInformation} | Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
-        Log-Information "Finished restrieving UDP information ($($remoteUDPInfo.Count) entries). Saving and displaying..."
+        $remoteUDPInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-UDPInformation} | 
+                                    Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
+        Log-Information "Finished retrieving UDP information ($($remoteUDPInfo.Count) entries). Saving and displaying..."
         $remoteUDPInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "udpconnections.csv") -NoTypeInformation -Delimiter ";"
         $remoteUDPInfo | Out-GridView -Title "UDP Connections"
 
         Log-Information "Network Step 3: Routing information"
-        $remoteRoutingInfo  = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-RoutingInformation} | Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
-        Log-Information "Finished restrieving Routing information ($($remoteRoutingInfo.Count) entries). Saving and displaying..."
+        $remoteRoutingInfo  = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-RoutingInformation} | 
+                                    Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
+        Log-Information "Finished retrieving Routing information ($($remoteRoutingInfo.Count) entries). Saving and displaying..."
         $remoteRoutingInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "routingcache.csv") -NoTypeInformation -Delimiter ";"
         $remoteRoutingInfo | Out-GridView -Title "Routing Info"
 
         Log-Information "Network Step 4: ARP Cache information"
-        $remoteARPCacheInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-ARPCacheInformation} | Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
-        Log-Information "Finished restrieving ARP Cache information ($($remoteARPCacheInfo.Count) entries). Saving and displaying..."
+        $remoteARPCacheInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-ARPCacheInformation} | 
+                                    Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
+        Log-Information "Finished retrieving ARP Cache information ($($remoteARPCacheInfo.Count) entries). Saving and displaying..."
         $remoteARPCacheInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "arpcache.csv") -NoTypeInformation -Delimiter ";"
         $remoteARPCacheInfo | Out-GridView -Title "ARP Cache"
 
@@ -1263,12 +1295,13 @@ Process {
             }
             Copy-Item -Path $handle64Path -Destination $remoteHandle64Path -ToSession $RemoteSession
 
-            $remoteFileHandleInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-FileHandles} -ArgumentList $remoteHandle64Path | Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
-            Log-Information "Finished restrieving file handle information ($($remoteFileHandleInfo.Count) entries). Saving and displaying..."
+            $remoteFileHandleInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-FileHandles} -ArgumentList $remoteHandle64Path | 
+                                        Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
+            Log-Information "Finished retrieving file handle information ($($remoteFileHandleInfo.Count) entries). Saving and displaying..."
             $remoteFileHandleInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "handles.csv") -NoTypeInformation -Delimiter ";"
             $remoteFileHandleInfo | Out-GridView -Title "Open File Handles"
         } else {
-            Log-Warning "Handle64.exe required under `"$handle64Path`". The Handle collector is unable to run"
+            Log-Warning "Handle64.exe required at `"$handle64Path`". The Handle collector is unable to run"
         }
     } else {
         Log-Warning "Option to capture file handles is not set. Will be skipped."
@@ -1278,8 +1311,10 @@ Process {
     # PROCESSES
     if($Options -contains "Processes") {
         Log-Progress "Retrieving process information" -PercentComplete 20
-        $remoteProcessInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-ProcessInformation} | Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId) | Sort-Object -Property Name
-        Log-Information "Finished restrieving process information ($($remoteProcessInfo.Count) entries). Saving and displaying..."
+        $remoteProcessInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-ProcessInformation} | 
+                                        Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId) | 
+                                        Sort-Object -Property Name
+        Log-Information "Finished retrieving process information ($($remoteProcessInfo.Count) entries). Saving and displaying..."
         $remoteProcessInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "processes.csv") -NoTypeInformation -Delimiter ";"
         $remoteProcessInfo | Out-GridView -Title "Running Processes"
     } else {
@@ -1292,8 +1327,9 @@ Process {
         # The user does not need bitlocker data for incident evaluation.
         # Just for potential offline forencics later. Therefore no Out-Gridview here
         Log-Progress "Retrieving bitlocker information" -PercentComplete 24
-        $remoteBitlockerInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-BitlockerKeys} | Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
-        Log-Information "Finished restrieving bitlocker information ($($remoteBitlockerInfo.Count) entries). Saving..."
+        $remoteBitlockerInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-BitlockerKeys} | 
+                                        Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
+        Log-Information "Finished retrieving bitlocker information ($($remoteBitlockerInfo.Count) entries). Saving..."
         $remoteBitlockerInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "bitlocker.csv") -NoTypeInformation -Delimiter ";"
     } else {
         Log-Warning "Option to capture bitlocker information is not set. Will be skipped."
@@ -1303,8 +1339,9 @@ Process {
     # ENVIRONMENTAL VARIABLES
     if($Options -contains "EnvironmentalVariables") {
         Log-Progress "Retrieving environmental variable information" -PercentComplete 28
-        $remoteEnvironmentalVariableInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-EnvironmentalVariableInfo} | Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
-        Log-Information "Finished restrieving environmental variable information ($($remoteEnvironmentalVariableInfo.Count) entries). Saving and displaying..."
+        $remoteEnvironmentalVariableInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-EnvironmentalVariableInfo} | 
+                                        Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
+        Log-Information "Finished retrieving environmental variable information ($($remoteEnvironmentalVariableInfo.Count) entries). Saving and displaying..."
         $remoteEnvironmentalVariableInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "environmental_variables.csv") -NoTypeInformation -Delimiter ";"
         $remoteEnvironmentalVariableInfo | Out-GridView -Title "Environmental Variables"
     } else {
@@ -1315,8 +1352,9 @@ Process {
     # LOCAL USERS
     if($Options -contains "LocalUsers") {
         Log-Progress "Retrieving user account information" -PercentComplete 32
-        $remoteUserInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-LocalUserInfo} | Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
-        Log-Information "Finished restrieving user account information ($($remoteUserInfo.Count) entries). Saving and displaying..."
+        $remoteUserInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-LocalUserInfo} | 
+                                        Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
+        Log-Information "Finished retrieving user account information ($($remoteUserInfo.Count) entries). Saving and displaying..."
         $remoteUserInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "user_accounts.csv") -NoTypeInformation -Delimiter ";"
         $remoteUserInfo | Out-GridView -Title "Local Users"
 
@@ -1342,9 +1380,9 @@ Process {
             }
             Copy-Item -Path $autorunsc64Path -Destination $remoteAutorunsc64Path -ToSession $RemoteSession
 
-            $remoteAutostartInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-Autoruns} -ArgumentList $remoteAutorunsc64Path | Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
-
-            Log-Information "Finished restrieving autostart information ($($remoteAutostartInfo.Count) entries). Saving and displaying..."
+            $remoteAutostartInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-Autoruns} -ArgumentList $remoteAutorunsc64Path | 
+                                            Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
+            Log-Information "Finished retrieving autostart information ($($remoteAutostartInfo.Count) entries). Saving and displaying..."
             $remoteAutostartInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "autostarts.csv") -NoTypeInformation -Delimiter ";"
             $remoteAutostartInfo | Select-Object -Property Time, "Entry Location", Entry, Enabled, Category, Profile, Description, Company, ImagePath, "Launch String" | Out-GridView -Title "Autostarts"
         } else {
@@ -1358,9 +1396,16 @@ Process {
     # EVENT LOGS
     if($Options -contains "EventLogs") {
         Log-Progress "Retrieving event logs" -PercentComplete 60
-        $ResultsFolderEventlogs = Join-Path -Path $ResultsFolder -ChildPath "Eventlogs"
-        $EventLogs = Get-EventLogBackup -ComputerName $ComputerName -Destination $ResultsFolderEventlogs
-        Log-Information "Finished restrieving event logs ($($EventLogs.Count) entries)"
+        $RemoteFolderEventLogs = Join-Path -Path $RemoteHelpFilesDir -ChildPath "EventLogs"
+        $ResultsFolderEventLogs = Join-Path -Path $ResultsFolder -ChildPath "EventLogs"
+
+        # Create backup evtx files for all enabled event logs
+        Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Invoke-EventLogBackup} -ArgumentList $RemoteFolderEventLogs
+
+        # Copy the event log backups from the target computer
+        Copy-Item -Path $RemoteFolderEventLogs -Destination $ResultsFolder -FromSession $RemoteSession -Recurse
+        
+        Log-Information "Finished retrieving event logs (copied $($EventLogs.Count) log files)"
     } else {
         Log-Warning "Option to capture eventlogs is not set. Will be skipped."
     }
@@ -1398,20 +1443,21 @@ Process {
             # Parallelizing the different jobs is not adviced because the 
             # report is mainly limited by disk IO, not computing power
 
+            $EventLogs = Get-ChildItem -Path $ResultsFolderEventLogs -File
             $SecurityEventLog = $EventLogs | Where-Object { $_.Name -eq "Security.evtx" }
-            $PowerShellOperationalEventLog = $EventLogs | Where-Object { $_.Name -eq "Microsoft-Windows-PowerShell%4Operational.evtx" }
+            $PowerShellOperationalEventLog = $EventLogs | Where-Object { $_.Name -eq "Microsoft-Windows-PowerShell_Operational.evtx" }
 
             if($SecurityEventLog) {
                 Log-Information "Generating user logon report..."
-                $userLogonReport = @(Get-UserLogons -Path $SecurityEventLog)
+                $userLogonReport = @(Get-UserLogons -Path $SecurityEventLog.FullName)
                 $userLogonReport | Out-GridView -Title "All User Logons"
 
                 Log-Information "Generating interactive logon report..."
-	            $interactiveUserLogonReport = @(Get-InteractiveUserLogons -Path $SecurityEventLog)
+	            $interactiveUserLogonReport = @(Get-InteractiveUserLogons -Path $SecurityEventLog.FullName)
                 $interactiveUserLogonReport | Out-GridView -Title "Interactive User Logons"
 
                 Log-Information "Generating user management events report..."
-	            $eventlogUserManagementEventsReport = @(Get-EventlogUserEvents -Path $SecurityEventLog)  
+	            $eventlogUserManagementEventsReport = @(Get-EventlogUserEvents -Path $SecurityEventLog.FullName)  
                 $eventlogUserManagementEventsReport | Out-GridView -Title "User Management Events (creation, deletion, ...)"
             } else {
                 Write-Warning "The Security event log could not be backed up. Some event log reports will not run"
@@ -1419,7 +1465,7 @@ Process {
     
             if($PowerShellOperationalEventLog) {
                 Log-Information "Generating executed powershell scripts report..."
-	            $eventlogUserManagementEventsReport = @(Get-ExecutedPowerShellScripts -Files $PowerShellOperationalEventLog)
+	            $eventlogUserManagementEventsReport = @(Get-ExecutedPowerShellScripts -Files $PowerShellOperationalEventLog.FullName)
                 $eventlogUserManagementEventsReport | Out-GridView -Title "Executed PowerShell Scripts"
             } else {
                 Write-Warning "The Powershell/Operational event log could not be backed up. Some event log reports will not run"
@@ -1440,10 +1486,10 @@ Process {
     ####################################
 
     # Before the backup of files the ram dump from the
-    # target machine has to be copied
+    # target machine has to be retrieved
     if($Options -contains "RamDump" -and $RamDumpCreationJob) {
         if($RamDumpCreationJob.State -ne "Finished") {
-            Log-Information "Waiting for the RAM Dump background job to finish..."
+            Log-Progress "Waiting for the RAM Dump background job to finish..." -PercentComplete 85
             Wait-Job -Job $RamDumpCreationJob | Out-Null
         }
 
@@ -1460,6 +1506,8 @@ Process {
     # and prevent accidental manipulation
     if($Options -contains "HashAndCompress") {
         Log-Progress "All saved files will be zipped and hashed." -PercentComplete 90
+        Log-Information "Saving Result in $ResultsFolder"
+
         $ZippingAndHashingTask = Start-Job -Name "ZippingAndHashingTask" -ScriptBlock ${Function:Compress-DirectoryWithHashes} -ArgumentList $ResultsFolder, $ResultsFolder, $true
     } else {
         Log-Warning "Option to hash and zip all captured files is not set. All saved file will be kept as-is."
@@ -1469,7 +1517,11 @@ Process {
     # LAUNCH THE INTERACTIVE USER DIALOG
     Log-Progress "Displaying interactive user dialog" -PercentComplete 100
     do {
-        Write-Host "Data capture, hashing and zipping is finished. Is there something else you want to do?"
+        if($Options -contains "HashAndCompress") {
+            Write-Host "The captured data is being hashed and zipped in the background. Is there something else you want to do?"
+        } else {
+            Write-Host "Capturing has finished (It will not be hashed and zipped). Is there something else you want to do?"
+        }
         Write-Host "1. " -ForegroundColor Green -NoNewline
         Write-Host "Delete Help Files on remote machine under `"$RemoteHelpFilesDir`"" -ForegroundColor Gray
         Write-Host "2. " -ForegroundColor Green -NoNewline
@@ -1493,8 +1545,7 @@ Process {
             Default {
                 Log-Information "User chose to quit the dialog"
             }
-          }
-
+        }
     } while ($UserInputHandled -eq $true)
 
 
