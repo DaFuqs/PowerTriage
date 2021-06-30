@@ -245,7 +245,7 @@ Begin {
 
     <#
     .SYNOPSIS
-        Querycurrent UDP endpoint statistics
+        Query UDP endpoint statistics
     #>
     Function Get-UDPInformation {
         Get-NetUDPEndpoint | Select-Object -Property LocalAddress, LocalPort, OwningProcess, CreationTime
@@ -318,7 +318,7 @@ Begin {
 
         # Regex patterns for parsing output of the handle64.exe
         # Pattern representing a process entry
-        # Example: "svchost.exe pid: 16968 DST\UserName"
+        # Example: "svchost.exe pid: 16968 Domain\UserName"
         [regex] $ProcessPattern = "(?<Name>\w+[.\w]+?)\s+pid:\s+(?<PID>\d+)\s+(?<User>[\\\w\s<>]+)$"
         # Pattern representing a handle entry
         # belonging to the last parsed process entry
@@ -371,7 +371,7 @@ Begin {
         The RAMCapturer executable resides on the destination system to 
         not to impact the drive even further
     .EXAMPLE
-        PS> Get-MemoryImage -PSSession MyRemoteSession -DestinationFolder "C:\Triage\"
+        PS> Invoke-MemoryImageJob -PSSession $MyRemoteSession -DestinationFolder "C:\Triage\"
 
         Starts a ram capture process in MyRemoteSession and copies the resulting dump 
         to the local C:\Triage folder
@@ -582,7 +582,7 @@ Begin {
 
         # Warn when finding significant time drift between systems
         if($timeDiffInMS -gt 250 -or $timeDiffInMS -lt -250) {
-            Write-Warning "Remote computer has a time difference of $timeDiffInMS. Differences over 250ms are considered significant. Other possible reason: Does the network have very high latency?"
+            Write-Warning "Remote computer has a time difference of $timeDiffInMS ms. Differences over 250ms are considered significant. Other possible reason: Does the network have very high latency?"
         }
 
         # Output results as object
@@ -799,7 +799,7 @@ Begin {
                 return $Mapping[$SID]
             } else {
                 # most likely a domain / system account
-                # => resolve via local query
+                # => resolve via local query in the try/catch block
             }
         }
         # local SID query. able to resolve 
@@ -809,7 +809,7 @@ Begin {
             $name = $objSID.Translate([System.Security.Principal.NTAccount]).Value
         } catch {
             # if the sid cannot be resolved return the plain sid again
-            # (in case it's a local accounts that was already deleted) 
+            # (in case it's a local account that was already deleted) 
             $name = $SID
         }
         return $name
