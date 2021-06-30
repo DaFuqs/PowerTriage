@@ -319,12 +319,13 @@ Begin {
         # Regex patterns for parsing output of the handle64.exe
         # Pattern representing a process entry
         # Example: "svchost.exe pid: 16968 Domain\UserName"
-        [regex] $ProcessPattern = "(?<Name>\w+[.\w]+?)\s+pid:\s+(?<PID>\d+)\s+(?<User>[\\\w\s<>]+)$"
+        [regex] $ProcessPattern = "(?<Name>\w+[.\w\s]+?)\s+pid:\s+(?<PID>\d+)\s+(?<User>[\\\w\s<>]+)$"
         # Pattern representing a handle entry
         # belonging to the last parsed process entry
         # Example1: "  134: File          C:\Windows\System32\Conhost.exe.mui"
         # Example2: "  1E4: Section       \Sessions\2\windows_shell_counters"
-        [regex] $EntryPattern = "(?<Handle>[0-9A-F]{4})\:\s(?<Type>[\s\w.]+)\s+(?<Info>[\w\-()]+)?\s+(?<Path>[\.\w\d:\\\s().-]+)$"
+        # Example3: "   40: File  (RW-)   C:\Windows"
+        [regex] $EntryPattern = "(?<Handle>[0-9A-F]{1,4})\:\s(?<Type>[\s\w.]+)\s+(?<Info>[\w\-()]+)?\s+(?<Path>[\.\w\d:\\\s().-]+)$"
 
         Write-Verbose "Executing handle64.exe at path `"$Handle64ExePath`""
         $data = &$Handle64ExePath -accepteula -nobanner -u
@@ -332,10 +333,14 @@ Begin {
 
         Write-Verbose "Building native powershell objects..."
         foreach ($entry in $data) {
+            if($entry -match "CM Trace") {
+                Write-Warning "stop"
+            }
+
             if($entry -match $ProcessPattern) {
-               $currName = $Matches.Name
-               $currPID = $Matches.PID
-               $currUser = $Matches.User
+                $currName = $Matches.Name
+                $currPID = $Matches.PID
+                $currUser = $Matches.User
             } elseif($Entry -match $EntryPattern) {
                 [pscustomobject] @{
                     Name = $currName
