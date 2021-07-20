@@ -42,6 +42,7 @@ Param (
     # Define the algorithms that the script should run against the target machine to save and capture
     # Autostarts: Captures all autostarts using autorunsc.exe
     # Networking: Captures active TCP connections, UDP data, routing information and ARP cache
+    # ExternalDrives: Connected USB/SCSI devices with mapped partitions
     # FileHandles: Captures all open file handles using Sysinternals handle.exe
     # RamDump: Creates a memory image using Belkasoft RAM Capturer
     # ComputerInfo: Captures general system information, like computer name, windows edition, ...
@@ -54,12 +55,17 @@ Param (
     # EventLogReports: Uses backed up event log files to generate a list of reports (User logons, ran PowerShell scripts)
     # HashAndCompress: Calculates hashes for all captured files and stores them as a zip file
     [Parameter(Mandatory=$false, ValueFromPipelineByPropertyName=$true)]
-    [ValidateSet("Autostarts","Networking","FileHandles","RamDump", "ComputerInfo", "Processes", "Bitlocker", "TimeDriftCheck", "LocalUsers", "EnvironmentalVariables", "Eventlogs", "EventlogReports", "HashAndCompress")]
-    [string[]] $Options = @("Autostarts","Networking","FileHandles","RamDump", "ComputerInfo", "Processes", "Bitlocker", "TimeDriftCheck", "LocalUsers", "EnvironmentalVariables", "Eventlogs", "EventlogReports", "HashAndCompress"),
+    [ValidateSet("Autostarts","Networking","ExternalDrives","FileHandles","RamDump", "ComputerInfo", "Processes", "Bitlocker", "TimeDriftCheck", "LocalUsers", "EnvironmentalVariables", "Eventlogs", "EventlogReports", "HashAndCompress")]
+    [string[]] $Options = @("Autostarts","Networking","ExternalDrives","ComputerInfo","Processes","TimeDriftCheck","LocalUsers","Eventlogs","EventlogReports"),
 
     # The folder where all capture output should be saved to
     [Parameter(Mandatory=$false, ValueFromPipelineByPropertyName=$true)]
-    [string] $ResultsFolder
+    [string] $ResultsFolder,
+
+    # If set the displayed results will not be filtered based on the entries in the whitelists
+    # The data export will always contain all data, regardless on if this parameter is set or not
+    [Parameter(Mandatory=$false, ValueFromPipelineByPropertyName=$true)]
+    [switch] $DoNotUseWhitelist
 )
 
 Begin {
@@ -245,7 +251,7 @@ Begin {
 
     <#
     .SYNOPSIS
-        Query UDP endpoint statistics
+        Querycurrent UDP endpoint statistics
     #>
     Function Get-UDPInformation {
         Get-NetUDPEndpoint | Select-Object -Property LocalAddress, LocalPort, OwningProcess, CreationTime
@@ -318,14 +324,13 @@ Begin {
 
         # Regex patterns for parsing output of the handle64.exe
         # Pattern representing a process entry
-        # Example: "svchost.exe pid: 16968 Domain\UserName"
-        [regex] $ProcessPattern = "(?<Name>\w+[.\w\s]+?)\s+pid:\s+(?<PID>\d+)\s+(?<User>[\\\w\s<>]+)$"
+        # Example: "svchost.exe pid: 16968 DST\UserName"
+        [regex] $ProcessPattern = "(?<Name>\w+[.\w]+?)\s+pid:\s+(?<PID>\d+)\s+(?<User>[\\\w\s<>]+)$"
         # Pattern representing a handle entry
         # belonging to the last parsed process entry
         # Example1: "  134: File          C:\Windows\System32\Conhost.exe.mui"
         # Example2: "  1E4: Section       \Sessions\2\windows_shell_counters"
-        # Example3: "   40: File  (RW-)   C:\Windows"
-        [regex] $EntryPattern = "(?<Handle>[0-9A-F]{1,4})\:\s(?<Type>[\s\w.]+)\s+(?<Info>[\w\-()]+)?\s+(?<Path>[\.\w\d:\\\s().-]+)$"
+        [regex] $EntryPattern = "(?<Handle>[0-9A-F]{4})\:\s(?<Type>[\s\w.]+)\s+(?<Info>[\w\-()]+)?\s+(?<Path>[\.\w\d:\\\s().-]+)$"
 
         Write-Verbose "Executing handle64.exe at path `"$Handle64ExePath`""
         $data = &$Handle64ExePath -accepteula -nobanner -u
@@ -333,14 +338,10 @@ Begin {
 
         Write-Verbose "Building native powershell objects..."
         foreach ($entry in $data) {
-            if($entry -match "CM Trace") {
-                Write-Warning "stop"
-            }
-
             if($entry -match $ProcessPattern) {
-                $currName = $Matches.Name
-                $currPID = $Matches.PID
-                $currUser = $Matches.User
+               $currName = $Matches.Name
+               $currPID = $Matches.PID
+               $currUser = $Matches.User
             } elseif($Entry -match $EntryPattern) {
                 [pscustomobject] @{
                     Name = $currName
@@ -376,7 +377,7 @@ Begin {
         The RAMCapturer executable resides on the destination system to 
         not to impact the drive even further
     .EXAMPLE
-        PS> Invoke-MemoryImageJob -PSSession $MyRemoteSession -DestinationFolder "C:\Triage\"
+        PS> Get-MemoryImage -PSSession MyRemoteSession -DestinationFolder "C:\Triage\"
 
         Starts a ram capture process in MyRemoteSession and copies the resulting dump 
         to the local C:\Triage folder
@@ -510,20 +511,7 @@ Begin {
         Query running process information
     #>
     Function Get-ProcessInformation {
-        Get-Process -IncludeUserName | 
-            Select-Object -Property ID, Name, Path,
-                                    UserName, SessionId,
-                                    Company, Description,
-                                    StartTime,
-                                    @{Name="RAM_MB"; Expression={
-                                       [Math]::Round($_.WorkingSet_MB / 1MB)
-                                    }},
-                                    @{Name="EnvironmentalVariables"; Expression={
-                                       ($_.StartInfo.EnvironmentVariables.GetEnumerator() | ForEach-Object { "$($_.Name): $($_.Value)" }) -join "; "
-                                    }},
-                                    @{Name="LoadedModules"; Expression={
-                                       $_.Modules.FileName -join "; "
-                                    }}
+        Get-CIMInstance Win32_Process | Select-Object -Property Name, CommandLine, SessionId, ProcessId, CreationDate
     }
 
     ####################################
@@ -547,6 +535,26 @@ Begin {
 
     ####################################
     #endregion BITLOCKER               #
+    ####################################
+
+
+    ####################################
+    #region    EXTERNAL DRIVES         #
+    ####################################
+
+    <#
+    .SYNOPSIS
+        Output device names and partitions for all connected drives
+    #>
+    Function Get-ExternalDrives {
+        Get-CimInstance win32_diskdrive | Where-Object {$_.interfacetype -eq "USB" -or $_.interfaceType -eq "SCSI" } | 
+            ForEach-Object { $caption = $_.Caption; $PNPDeviceID = $_.PNPDeviceID; Get-CimInstance -Query "ASSOCIATORS OF {Win32_DiskDrive.DeviceID=`"$($_.DeviceID.replace('\','\\'))`"} WHERE AssocClass = Win32_DiskDriveToDiskPartition"} |
+            ForEach-Object { Get-CimInstance -Query "ASSOCIATORS OF {Win32_DiskPartition.DeviceID=`"$($_.DeviceID)`"} WHERE AssocClass = Win32_LogicalDiskToPartition"
+            } | Select-Object -Property @{Name="DriveCaption"; Expression = { $caption }}, @{Name="PNPDeviceID"; Expression = { $PNPDeviceID }}, VolumeName, @{Name="Partition"; Expression = { $_.DeviceID }}, @{Name="SizeGB"; Expression = { [Math]::round($_.Size / 1GB, 2)}}
+    }
+
+    ####################################
+    #endregion EXTERNAL DRIVES         #
     ####################################
 
 
@@ -587,7 +595,7 @@ Begin {
 
         # Warn when finding significant time drift between systems
         if($timeDiffInMS -gt 250 -or $timeDiffInMS -lt -250) {
-            Write-Warning "Remote computer has a time difference of $timeDiffInMS ms. Differences over 250ms are considered significant. Other possible reason: Does the network have very high latency?"
+            Write-Warning "Remote computer has a time difference of $timeDiffInMS. Differences over 250ms are considered significant. Other possible reason: Does the network have very high latency?"
         }
 
         # Output results as object
@@ -804,7 +812,7 @@ Begin {
                 return $Mapping[$SID]
             } else {
                 # most likely a domain / system account
-                # => resolve via local query in the try/catch block
+                # => resolve via local query
             }
         }
         # local SID query. able to resolve 
@@ -814,7 +822,7 @@ Begin {
             $name = $objSID.Translate([System.Security.Principal.NTAccount]).Value
         } catch {
             # if the sid cannot be resolved return the plain sid again
-            # (in case it's a local account that was already deleted) 
+            # (in case it's a local accounts that was already deleted) 
             $name = $SID
         }
         return $name
@@ -1317,11 +1325,21 @@ Process {
     if($Options -contains "Processes") {
         Log-Progress "Retrieving process information" -PercentComplete 20
         $remoteProcessInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-ProcessInformation} | 
-                                        Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId) | 
-                                        Sort-Object -Property Name
+                                        Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId, PSShowComputerName) | 
+                                        Sort-Object -Property Name, CommandLine
         Log-Information "Finished retrieving process information ($($remoteProcessInfo.Count) entries). Saving and displaying..."
         $remoteProcessInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "processes.csv") -NoTypeInformation -Delimiter ";"
-        $remoteProcessInfo | Out-GridView -Title "Running Processes"
+
+        if($DoNotUseWhitelist) {
+            $remoteProcessInfo | Select-Object -Property Id, Name, Path, UserName, SessionID, Company, Description, StartTime | Out-GridView -Title "Running Processes"
+        } else {
+            $ProcessWhiteListPath = (Join-Path -Path $PSScriptRoot -ChildPath "\Whitelists\Processes.csv")
+            $ProcessWhiteList = Import-Csv -LiteralPath $ProcessWhiteListPath -Delimiter ","
+            Compare-Object -ReferenceObject $remoteProcessInfo -DifferenceObject $ProcessWhiteList -Property "Name", "CommandLine" -PassThru | 
+                Where-Object -Property SideIndicator -EQ -Value "<=" |
+                Select-Object -Property * -ExcludeProperty SideIndicator |
+                Out-GridView -Title "Running Processes (without whitelisted entries)"
+        }
     } else {
         Log-Warning "Option to process information is not set. Will be skipped."
     }
@@ -1338,6 +1356,18 @@ Process {
         $remoteBitlockerInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "bitlocker.csv") -NoTypeInformation -Delimiter ";"
     } else {
         Log-Warning "Option to capture bitlocker information is not set. Will be skipped."
+    }
+
+    # EXTERNAL DRIVES
+    if($Options -contains "ExternalDrives") {
+        Log-Progress "Retrieving external drives" -PercentComplete 26
+        $remoteExternalDriveInfo = @(Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Get-ExternalDrives} | 
+                                        Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
+        Log-Information "Finished retrieving external drive information ($($remoteExternalDriveInfo.Count) entries). Saving and displaying..."
+        $remoteExternalDriveInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "external_drives.csv") -NoTypeInformation -Delimiter ";"
+        $remoteExternalDriveInfo | Out-GridView -Title "Environmental Variables"
+    } else {
+        Log-Warning "Option to external drives is not set. Will be skipped."
     }
 
 
@@ -1361,7 +1391,18 @@ Process {
                                         Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
         Log-Information "Finished retrieving user account information ($($remoteUserInfo.Count) entries). Saving and displaying..."
         $remoteUserInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "user_accounts.csv") -NoTypeInformation -Delimiter ";"
-        $remoteUserInfo | Out-GridView -Title "Local Users"
+
+        if($DoNotUseWhitelist) {
+            $remoteUserInfo | Out-GridView -Title "Local Users"
+        } else {
+            $localUserWhiteListPath = (Join-Path -Path $PSScriptRoot -ChildPath "\Whitelists\LocalUsers.csv")
+            # convert string to boolean value
+            $localUserWhiteList = Import-Csv -LiteralPath $localUserWhiteListPath -Delimiter "," | Select-Object -Property Name,@{Name="Enabled"; Expression = {$_.Enabled -eq "True"}}
+            Compare-Object -ReferenceObject $remoteUserInfo -DifferenceObject $localUserWhiteList -Property "Name", "Enabled" -PassThru | 
+                Where-Object -Property SideIndicator -EQ -Value "<=" |
+                Select-Object -Property * -ExcludeProperty SideIndicator |
+                Out-GridView -Title "Local Users (without whitelisted entries)"
+        }
 
         if($Options -contains "EventlogReports") {
             $script:SidToUserNameMapping = @{}
@@ -1389,7 +1430,19 @@ Process {
                                             Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
             Log-Information "Finished retrieving autostart information ($($remoteAutostartInfo.Count) entries). Saving and displaying..."
             $remoteAutostartInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "autostarts.csv") -NoTypeInformation -Delimiter ";"
-            $remoteAutostartInfo | Select-Object -Property Time, "Entry Location", Entry, Enabled, Category, Profile, Description, Company, ImagePath, "Launch String" | Out-GridView -Title "Autostarts"
+
+            if($DoNotUseWhitelist) {
+                $remoteAutostartInfo | Select-Object -Property Time, "Entry Location", Entry, Enabled, Category, Profile, Description, Company, ImagePath, "Launch String" | Out-GridView -Title "Autostarts"
+            } else {
+                $autostartWhiteListPath = (Join-Path -Path $PSScriptRoot -ChildPath "\Whitelists\Autostarts.csv")
+                $autostartWhiteList = Import-Csv -LiteralPath $autostartWhiteListPath -Delimiter ","
+                Compare-Object -ReferenceObject $remoteAutostartInfo -DifferenceObject $autostartWhiteList -Property "Entry Location","Entry","SHA-1" -PassThru | 
+                    Where-Object -Property SideIndicator -EQ -Value "<=" |
+                    Select-Object -Property * -ExcludeProperty SideIndicator |
+                    Out-GridView -Title "Autostarts (without whitelisted entries)"
+            }
+
+            
         } else {
             Log-Warning "autorunsc64.exe required under `"$autorunsc64Path`". The Autoruns collector is unable to run"
         }
@@ -1530,7 +1583,11 @@ Process {
         Write-Host "1. " -ForegroundColor Green -NoNewline
         Write-Host "Delete Help Files on remote machine under `"$RemoteHelpFilesDir`"" -ForegroundColor Gray
         Write-Host "2. " -ForegroundColor Green -NoNewline
-        Write-Host "Start a RDP session to $ComputerName ($($env:USERNAME) with RestrictedAdmin)" -ForegroundColor Gray
+        Write-Host "Start a RDP session to $ComputerName (as $($env:USERNAME) with RestrictedAdmin)" -ForegroundColor Gray
+        Write-Host "3. " -ForegroundColor Green -NoNewline
+        Write-Host "Add all remote Processes to the process whitelist" -ForegroundColor Gray
+        Write-Host "4. " -ForegroundColor Green -NoNewline
+        Write-Host "Add all remote Autostarts to the autostart whitelist" -ForegroundColor Gray
         Write-Host "[any other input to finish]"
        
         $UserInput = Read-Host -Prompt "Your choice"
@@ -1545,6 +1602,32 @@ Process {
             2 {
                 Log-Information "User chose 2: Launch RDP session with $($env:USERNAME) as RestrictedAdmin"
                 mstsc.exe /V:$ComputerName /restrictedAdmin
+                $UserInputHandled = $true
+            }
+            3 {
+                if($ProcessWhiteList -and $ProcessWhiteListPath) {
+                    Compare-Object -ReferenceObject $remoteProcessInfo -DifferenceObject $ProcessWhiteList -Property "Name", "CommandLine" -PassThru | 
+                    Where-Object -Property SideIndicator -EQ -Value "<=" |
+                    Select-Object -Property Name, CommandLine |
+                    Export-CSV -Path $ProcessWhiteListPath -Append
+
+                    Write-Host "Added all remote process entries to the process whitelist." -ForegroundColor Green
+                } else {
+                    Write-Warning "Process whitelist did not run in this collection cycle. Did not add entries to whitelist to prevent duplicates."
+                }
+                $UserInputHandled = $true
+            }
+            4 {
+                if($autostartWhiteList -and $autostartWhiteListPath) {
+                    Compare-Object -ReferenceObject $remoteAutostartInfo -DifferenceObject $autostartWhiteList -Property "Entry Location","Entry","SHA-1" -PassThru | 
+                    Where-Object -Property SideIndicator -EQ -Value "<=" |
+                    Select-Object -Property "Entry Location","Entry","SHA-1" |
+                    Export-CSV -Path $autostartWhiteListPath -Append
+
+                    Write-Host "Added all remote process entries to the process whitelist." -ForegroundColor Green
+                } else {
+                    Write-Warning "Process whitelist did not run in this collection cycle. Did not add entries to whitelist to prevent duplicates."
+                }
                 $UserInputHandled = $true
             }
             Default {
