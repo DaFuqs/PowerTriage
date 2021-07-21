@@ -413,7 +413,7 @@ Begin {
 
 	    # Copy ram capturer from the local computer to destination system
 	    Write-Verbose "Copying RAM capturer executive files to remote system"
-	    Copy-Item -Path $RamCapturerDirectory -Destination $RemoteDirectory -ToSession $PSSession -Force -Recurse
+	    Copy-Item -Path $RamCapturerDirectory -Destination $RemoteRamCapturerDirectory -ToSession $PSSession -Force -Recurse
 
 	    # Run capture via RamCapturer64.exe and wait until it is finished
 	    Write-Verbose "Starting capturing process in background..."
