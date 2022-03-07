@@ -56,7 +56,7 @@ Param (
     # HashAndCompress: Calculates hashes for all captured files and stores them as a zip file
     [Parameter(Mandatory=$false, ValueFromPipelineByPropertyName=$true)]
     [ValidateSet("Autostarts","Networking","ExternalDrives","FileHandles","RamDump", "ComputerInfo", "Processes", "Bitlocker", "TimeDriftCheck", "LocalUsers", "EnvironmentalVariables", "Eventlogs", "EventlogReports", "HashAndCompress")]
-    [string[]] $Options = @("Autostarts","Networking","ExternalDrives","ComputerInfo","Processes","TimeDriftCheck","LocalUsers","Eventlogs","EventlogReports"),
+    [string[]] $Options = @("Autostarts","Networking","ExternalDrives","Handles","ComputerInfo","Processes","TimeDriftCheck","LocalUsers","Eventlogs","EventlogReports"),
 
     # The folder where all capture output should be saved to
     [Parameter(Mandatory=$false, ValueFromPipelineByPropertyName=$true)]
@@ -694,9 +694,9 @@ Begin {
         # Execute the tool with the parameters for analysing all types of
         # autostart types (-a *) and output the resulting data in csv format (-c)
         # depending if the autostart stems from a file the files hash will be 
-        # calculated, too (-h)
+        # calculated, too (-h). Runs for autostarts of all users (*)
         Write-Verbose "Querying autostarts..."
-        $autostartsraw = &$Autorunsc64ExePath -a * -c -h -accepteula
+        $autostartsraw = &$Autorunsc64ExePath -a * -c -h -accepteula *
 
         # Cut autostarts tool header and create native
         # PowerShell objects from the returned string
@@ -1365,7 +1365,7 @@ Process {
                                         Select-Object -Property * -ExcludeProperty PsComputerName, RunspaceId)
         Log-Information "Finished retrieving external drive information ($($remoteExternalDriveInfo.Count) entries). Saving and displaying..."
         $remoteExternalDriveInfo | Export-Csv -Path (Join-Path -Path $ResultsFolder -ChildPath "external_drives.csv") -NoTypeInformation -Delimiter ";"
-        $remoteExternalDriveInfo | Out-GridView -Title "Environmental Variables"
+        $remoteExternalDriveInfo | Out-GridView -Title "Connected Drives"
     } else {
         Log-Warning "Option to external drives is not set. Will be skipped."
     }
@@ -1461,7 +1461,7 @@ Process {
         Invoke-Command -Session $RemoteSession -ScriptBlock ${function:Invoke-EventLogBackup} -ArgumentList $RemoteFolderEventLogs
 
         # Copy the event log backups from the target computer
-        Copy-Item -Path $RemoteFolderEventLogs -Destination $ResultsFolder -FromSession $RemoteSession -Recurse
+        Copy-Item -Path $RemoteFolderEventLogs -Destination $ResultsFolder -FromSession $RemoteSession -Recurse -ErrorAction SilentlyContinue
         
         Log-Information "Finished retrieving event logs (copied $($EventLogs.Count) log files)"
     } else {
