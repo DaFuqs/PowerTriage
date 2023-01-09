@@ -1436,10 +1436,24 @@ Process {
             } else {
                 $autostartWhiteListPath = (Join-Path -Path $PSScriptRoot -ChildPath "\Whitelists\Autostarts.csv")
                 $autostartWhiteList = Import-Csv -LiteralPath $autostartWhiteListPath -Delimiter ","
-                Compare-Object -ReferenceObject $remoteAutostartInfo -DifferenceObject $autostartWhiteList -Property "Entry Location","Entry","SHA-1" -PassThru | 
-                    Where-Object -Property SideIndicator -EQ -Value "<=" |
-                    Select-Object -Property * -ExcludeProperty SideIndicator |
-                    Out-GridView -Title "Autostarts (without whitelisted entries)"
+
+                $notWhitelistedAutostarts = $remoteAutostartInfo | ForEach-Object {
+                    $whitelisted = $false
+                    foreach($whiteListEntry in $autostartWhiteList) {
+                        if($((-not $whiteListEntry."SHA-1") -or ($_."SHA-1" -eq $whiteListEntry."SHA-1")) -and $_.Entry -like $whiteListEntry.Entry -and $_."Entry Location" -like $whiteListEntry."Entry Location") {
+                            $whitelisted = $true
+                            break
+                        }
+                    }
+                    if(-not $whitelisted) {
+                        $_
+                    }
+                }
+                if($notWhitelistedAutostarts) {
+                    $notWhitelistedAutostarts | Select-Object -Property Time, "Entry Location", Entry, Enabled, Category, Profile, Description, Company, ImagePath, "Launch String" | Out-GridView -Title "Autostarts (without whitelisted entries)"
+                } else {
+                    Log-Information "There were no autostarts not on the whitelist."
+                }
             }
 
             
@@ -1619,11 +1633,7 @@ Process {
             }
             4 {
                 if($autostartWhiteList -and $autostartWhiteListPath) {
-                    Compare-Object -ReferenceObject $remoteAutostartInfo -DifferenceObject $autostartWhiteList -Property "Entry Location","Entry","SHA-1" -PassThru | 
-                    Where-Object -Property SideIndicator -EQ -Value "<=" |
-                    Select-Object -Property "Entry Location","Entry","SHA-1" |
-                    Export-CSV -Path $autostartWhiteListPath -Append
-
+                    $notWhitelistedAutostarts | Select-Object -Property "Entry Location","Entry","SHA-1" | Export-CSV -Path $autostartWhiteListPath -Append
                     Write-Host "Added all remote process entries to the process whitelist." -ForegroundColor Green
                 } else {
                     Write-Warning "Process whitelist did not run in this collection cycle. Did not add entries to whitelist to prevent duplicates."
